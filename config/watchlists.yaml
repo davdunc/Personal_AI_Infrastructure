@@ -9,6 +9,7 @@ default:
   - GOOGL
   - NFLX
   - SPY
+  - SMCI
 
 momentum:
   # Add high-momentum tickers as discovered
