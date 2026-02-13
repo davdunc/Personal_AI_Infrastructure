@@ -972,10 +972,10 @@ async function cmdLog(
   // Write to database
   // Write to database (reuse db from earlier if available)
   const dbWriter = initDB(skillDir, dbConfig);
-  if (db) {
-    db.upsertTrades(date, [newTrade]);
-    db.upsertDailySummary(log);
-    db.close();
+  if (dbWriter) {
+    dbWriter.upsertTrades(date, [newTrade]);
+    dbWriter.upsertDailySummary(log);
+    dbWriter.close();
   }
 
   console.log(`\nLogged: ${newTrade.id}`);
