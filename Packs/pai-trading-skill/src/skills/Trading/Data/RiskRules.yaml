@@ -58,4 +58,4 @@ time_rules:
 database:
   provider: "sqlite"              # "sqlite" or "postgres"
   sqlite_path: "Data/trades.db"   # Relative to skill dir
-  postgres_url: ""                # postgres://user:pass@host:5432/trades (for future)
+  postgres_url: ""                #  (for future) - DO NOT commit credentials here, use environment variables
