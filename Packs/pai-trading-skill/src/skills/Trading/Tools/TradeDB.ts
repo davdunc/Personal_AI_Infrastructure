@@ -571,7 +571,13 @@ function rowToSummary(row: any): DailySummaryRow {
     losers: row.losers,
     breakeven: row.breakeven,
     win_rate: row.win_rate,
-    symbols: JSON.parse(row.symbols),
+    symbols: row.symbols ? ((): string[] => {
+      try {
+        return JSON.parse(row.symbols);
+      } catch {
+        return [];
+      }
+    })() : [],
     live_trades: row.live_trades,
     live_pnl: row.live_pnl,
     live_win_rate: row.live_win_rate,
