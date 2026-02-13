@@ -545,7 +545,13 @@ function rowToTrade(row: any): DBRoundTrip {
     entry_time: row.entry_time,
     exit_time: row.exit_time,
     duration_mins: row.duration_mins,
-    accounts: JSON.parse(row.accounts),
+    accounts: row.accounts ? ((): string[] => {
+      try {
+        return JSON.parse(row.accounts);
+      } catch {
+        return [];
+      }
+    })() : [],
     account_type: row.account_type,
     setup: row.setup,
     notes: row.notes,
