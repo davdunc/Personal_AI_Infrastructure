@@ -398,7 +398,12 @@ async function cmdIngest(date: string, sourceOverride: string | undefined, dryRu
   const basePath = sourceOverride || tradeReviewPath;
 
   // Build path: YYYY/MM/YYYY-MM-DD
-  const [year, month] = date.split("-");
+  const dateParts = date.split("-");
+  if (dateParts.length !== 3 || dateParts[0].length !== 4 || dateParts[1].length !== 2 || dateParts[2].length !== 2) {
+    console.error(`Invalid date format: ${date}. Expected YYYY-MM-DD`);
+    process.exit(1);
+  }
+  const [year, month] = dateParts;
   const dateDir = join(basePath, year, month, date);
 
   if (!existsSync(dateDir)) {
