@@ -3,7 +3,7 @@
 # Modify via the Playbooks workflow or edit directly.
 
 config:
-  trade_review_path: "C:/Users/David/OneDrive/Documents/Trade_Review"
+  trade_review_path: "${HOME}/OneDrive/Documents/Trade_Review"
   chart_output_path: "Data/TradeLog/charts"
 
 account:
