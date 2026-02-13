@@ -965,7 +965,8 @@ async function cmdLog(
   await Bun.write(logFile, yamlStringify(log));
 
   // Write to database
-  const db = initDB(skillDir, dbConfig);
+  // Write to database (reuse db from earlier if available)
+  const dbWriter = initDB(skillDir, dbConfig);
   if (db) {
     db.upsertTrades(date, [newTrade]);
     db.upsertDailySummary(log);
