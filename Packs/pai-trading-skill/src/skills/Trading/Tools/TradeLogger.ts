@@ -121,7 +121,22 @@ function getSkillDir(): string {
 
 // ─── CSV Parsing ─────────────────────────────────────────────────────────────
 
+type CsvFormat = "das-fills" | "das-trades";
+
+function detectCsvFormat(csvContent: string): CsvFormat {
+  const firstLine = csvContent.split("\n")[0] || "";
+  // DAS Trades.csv format has "TradeID" as first column
+  if (firstLine.includes("TradeID")) return "das-trades";
+  return "das-fills";
+}
+
 function parseFillsCsv(csvContent: string): Fill[] {
+  const format = detectCsvFormat(csvContent);
+  if (format === "das-trades") return parseDasTradesCsv(csvContent);
+  return parseDasFillsCsv(csvContent);
+}
+
+function parseDasFillsCsv(csvContent: string): Fill[] {
   // Header: Time,Symbol,Side,Price,Qty,Route,Account,LiqType,ECNFee,P / L,
   // Note: trailing comma on each line, "P / L" has spaces
   const records = csvParse(csvContent, {
@@ -152,6 +167,60 @@ function parseFillsCsv(csvContent: string): Fill[] {
       liqType: row["LiqType"]?.trim() || "",
       ecnFee: parseFloat(row["ECNFee"]) || 0,
       pnl: parseFloat(row["P / L"]) || 0,
+    });
+  }
+
+  return fills;
+}
+
+function parseDasTradesCsv(csvContent: string): Fill[] {
+  // Header: TradeID,OrderID,Trader,Account,Branch,route,bkrsym,rrno,B/S,SHORT,Market,symb,qty,price,time
+  // Time format: MM/DD/YY HH:MM:SS — extract HH:MM:SS
+  // B/S + SHORT → Side: B=Buy, S+SHORT=Y → SS (short sell), S+SHORT=N → S (sell to close)
+  // No per-fill P&L or ECN fees in this format (computed from round-trip prices)
+  const records = csvParse(csvContent, {
+    columns: true,
+    skip_empty_lines: true,
+    trim: true,
+    relax_column_count: true,
+  });
+
+  const fills: Fill[] = [];
+  for (const row of records) {
+    const rawTime = row["time"]?.trim();
+    const symbol = row["symb"]?.trim();
+    const bs = row["B/S"]?.trim();
+    const isShort = row["SHORT"]?.trim();
+    const price = parseFloat(row["price"]);
+    const qty = parseInt(row["qty"], 10);
+
+    if (!rawTime || !symbol || !bs || isNaN(price) || isNaN(qty)) continue;
+
+    // Extract HH:MM:SS from "MM/DD/YY HH:MM:SS"
+    const timeParts = rawTime.split(" ");
+    const time = timeParts.length > 1 ? timeParts[1] : rawTime;
+
+    // Map B/S + SHORT to Side: B→B, S+SHORT=Y→SS, S+SHORT=N→S
+    let side: Fill["side"];
+    if (bs === "B") {
+      side = "B";
+    } else if (isShort === "Y") {
+      side = "SS";
+    } else {
+      side = "S";
+    }
+
+    fills.push({
+      time,
+      symbol,
+      side,
+      price,
+      qty,
+      route: row["route"]?.trim() || "",
+      account: row["Account"]?.trim() || "",
+      liqType: row["Market"]?.trim() || "",
+      ecnFee: 0,
+      pnl: 0, // No per-fill P&L; computed from round-trip prices
     });
   }
 
@@ -199,6 +268,24 @@ function parsePositionsSummaryPnl(csvContent: string): number {
     }
   }
   return 0;
+}
+
+function parsePnlByPositionTotal(csvContent: string): number {
+  // Header: ACCID,Symbol,Shares,Realized,ECNFEE,P & L,
+  // Sum "P & L" column across all rows for total realized P&L
+  const records = csvParse(csvContent, {
+    columns: true,
+    skip_empty_lines: true,
+    trim: true,
+    relax_column_count: true,
+  });
+
+  let total = 0;
+  for (const row of records) {
+    const pnl = parseFloat(row["P & L"]);
+    if (!isNaN(pnl)) total += pnl;
+  }
+  return round2(total);
 }
 
 // ─── Round-Trip Grouping ─────────────────────────────────────────────────────
@@ -299,10 +386,20 @@ function buildRoundTrip(fills: Fill[], date: string, symbol: string, sourceDir: 
 
   const total_shares = Math.max(entryShares, exitShares);
 
-  // Sum P&L from all fills (DAS provides per-fill realized P&L)
-  const pnl = round2(fills.reduce((sum, f) => sum + f.pnl, 0));
+  // Sum P&L from all fills (DAS fills format provides per-fill realized P&L)
+  let pnl = round2(fills.reduce((sum, f) => sum + f.pnl, 0));
   const fees = round2(fills.reduce((sum, f) => sum + Math.abs(f.ecnFee), 0));
-  const net_pnl = round2(pnl);  // P&L from CSV already includes fee impact
+
+  // If per-fill P&L is zero (e.g. DAS Trades.csv format), compute from prices
+  if (pnl === 0 && entry_avg > 0 && exit_avg > 0 && total_shares > 0) {
+    if (side === "long") {
+      pnl = round2((exit_avg - entry_avg) * total_shares);
+    } else {
+      pnl = round2((entry_avg - exit_avg) * total_shares);
+    }
+  }
+
+  const net_pnl = round2(pnl - fees);
 
   // Times
   const entry_time = fills[0].time;
@@ -412,11 +509,14 @@ async function cmdIngest(date: string, sourceOverride: string | undefined, dryRu
     process.exit(1);
   }
 
-  // Read trades CSV
-  const tradesFile = join(dateDir, `trades-${date}.csv`);
+  // Read trades CSV — prefer undated (canonical), fall back to dated
+  let tradesFile = join(dateDir, "Trades.csv");
   if (!existsSync(tradesFile)) {
-    console.error(`Trades CSV not found: ${tradesFile}`);
-    console.error(`Looking for: trades-${date}.csv`);
+    tradesFile = join(dateDir, `trades-${date}.csv`);
+  }
+  if (!existsSync(tradesFile)) {
+    console.error(`Trades CSV not found in: ${dateDir}`);
+    console.error(`Looked for: Trades.csv, trades-${date}.csv`);
     process.exit(1);
   }
 
@@ -446,7 +546,7 @@ async function cmdIngest(date: string, sourceOverride: string | undefined, dryRu
     summary: {
       total_pnl: totalPnl,
       total_fees: totalFees,
-      total_net_pnl: round2(totalPnl),
+      total_net_pnl: round2(roundTrips.reduce((s, rt) => s + rt.net_pnl, 0)),
       total_trades: roundTrips.length,
       winners,
       losers,
@@ -458,14 +558,30 @@ async function cmdIngest(date: string, sourceOverride: string | undefined, dryRu
     trades: roundTrips,
   };
 
-  // Cross-check with positions CSV
-  const positionsFile = join(dateDir, `positions-${date}.csv`);
+  // Cross-check with positions CSV — prefer undated (canonical), then dated variants
+  let positionsFile = join(dateDir, "pnl-by-position.csv");
+  let positionsFormat: "positions" | "pnl-by-position" = "pnl-by-position";
+  if (!existsSync(positionsFile)) {
+    positionsFile = join(dateDir, `pnl-by-position-${date}.csv`);
+  }
+  if (!existsSync(positionsFile)) {
+    positionsFile = join(dateDir, `positions-${date}.csv`);
+    positionsFormat = "positions";
+  }
+  if (!existsSync(positionsFile)) {
+    positionsFile = join(dateDir, `positions-all-${date}.csv`);
+    positionsFormat = "positions";
+  }
   if (existsSync(positionsFile)) {
     const posContent = await Bun.file(positionsFile).text();
-    const summaryPnl = parsePositionsSummaryPnl(posContent);
+    const summaryPnl = positionsFormat === "pnl-by-position"
+      ? parsePnlByPositionTotal(posContent)
+      : parsePositionsSummaryPnl(posContent);
     const diff = Math.abs(summaryPnl - totalPnl);
     if (diff > 0.50) {
       console.log(`[WARN] P&L discrepancy: positions summary=$${summaryPnl.toFixed(2)}, computed=$${totalPnl.toFixed(2)} (diff=$${diff.toFixed(2)})`);
+    } else {
+      console.log(`[OK] P&L cross-check passed: $${summaryPnl.toFixed(2)} (diff=$${diff.toFixed(2)})`);
     }
   }
 
